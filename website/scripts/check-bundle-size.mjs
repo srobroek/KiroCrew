@@ -57,7 +57,19 @@ export const CHUNK_BUDGETS = {
   // takeover, 13 catalogs x 52 lines, ~55 KB). Same recurrence as the `t` and
   // `App` entries below: a ceiling that drifted to <1% headroom fails on
   // routine string growth rather than on the new library it exists to catch.
-  all: 10975 * KB, // measured 10450 KB on main 2026-09-06 (~5% headroom)
+  // Re-measured 2026-09-10 on this branch's merge ref: the chunk builds at
+  // 11,037 KB against the 10975 KB ceiling -- over by 62 KB. The growth is
+  // main's: 65 commits touched `website/src/i18n` between the 2026-09-06
+  // measurement above and this one, each adding keys across the 12-13 shipped
+  // catalogs, which is the routine growth this ceiling is documented NOT to
+  // police. This branch's entire frontend diff is 5 added lines in
+  // `website/electron/test/packaging.test.js`, a test file that is not bundled,
+  // so it contributes nothing to the chunk it is being failed for. The gate runs
+  // on `pull_request` only, so catalog growth landing on main is unmeasured
+  // until some PR's merge ref pays for it -- the same recurrence the paragraph
+  // above records, and the reason the ceiling is set from a measurement with
+  // ~5% headroom rather than trimmed to the last measured byte.
+  all: 11590 * KB, // measured 11037 KB on the merge ref 2026-09-10 (~5% headroom)
 
   // The i18n RUNTIME — the i18next singleton, `initI18n`, the English catalog —
   // named after `src/i18n/t.ts`. Held separately from `all` above because
