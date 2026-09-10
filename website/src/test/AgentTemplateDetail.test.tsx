@@ -28,7 +28,6 @@ const mockApi = vi.hoisted(() => ({
   agentPublish: vi.fn(),
   agentReset: vi.fn(),
   updateKirocrewAgent: vi.fn(),
-  agentDelete: vi.fn(),
   skills: vi.fn(),
 }))
 vi.mock('../api/client', () => ({ api: mockApi }))
@@ -105,7 +104,6 @@ beforeEach(() => {
   mockApi.agentPublish.mockResolvedValue({ template: 'published-name' })
   mockApi.agentReset.mockResolvedValue({})
   mockApi.updateKirocrewAgent.mockResolvedValue({})
-  mockApi.agentDelete.mockResolvedValue({})
   // A plain array, which is what the endpoint really answers — an object with an
   // `agents` key silently blanks provenance, so the fixture has to match.
   mockApi.agentsInstalled.mockResolvedValue([
@@ -309,7 +307,6 @@ describe('the crew\'s own copy bound', () => {
       expect(mockApi.agentReset).toHaveBeenCalledWith('atlas-crewA', 'crewA'),
     )
     expect(mockApi.updateKirocrewAgent).not.toHaveBeenCalled()
-    expect(mockApi.agentDelete).not.toHaveBeenCalled()
     await waitFor(() => expect(onSelect).toHaveBeenCalledWith('atlas'))
   })
 

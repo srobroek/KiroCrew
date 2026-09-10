@@ -7560,10 +7560,10 @@
       "sensitive": false,
       "tags": [],
       "label": "Agent template pane",
-      "help": "Show the crew definition panel with private fork-on-edit (soak; see #8567).",
+      "help": "Show the agent's template definition (prompt, skills, tools, MCP, guardrails) inline in the agent editor. On by default; set false to hide it.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": false
+      "defaultValue": true
     },
     {
       "path": "timezone",

@@ -1,13 +1,13 @@
 """``agent_template_pane`` must survive load() -> masked GET -> frontend predicate.
 
-The crew definition panel (private fork-on-edit) is gated behind
-``agent_template_pane: true`` as a TOP-LEVEL key in the running instance's
-``config.json``. The frontend reads that flag live off ``GET
-/api/config/kirocrew`` (``website/src/hooks/useAgentTemplatePane.ts`` requires
-the value to be exactly ``true``), so the whole feature turns on the key
-reaching the browser in that response body — the same launch-blocker shape
-``connections_ui`` had (see test_connections_ui_flag.py for the full rationale
-on why an unmodelled key never gets there).
+The in-agent template pane (the definition shown inline in the agent editor) is
+ON by default: absent the key, or with any non-bool value, the pane renders. An
+operator opts out with a real ``agent_template_pane: false`` TOP-LEVEL key in the
+running instance's ``config.json``. Either way the frontend reads the value live
+off ``GET /api/config/kirocrew`` (``website/src/hooks/useAgentTemplatePane.ts``
+requires it to be exactly ``true``), so the field must survive load -> masked GET
+-> that predicate — the same reach-the-browser shape ``connections_ui`` has (see
+test_connections_ui_flag.py for why an unmodelled key never gets there).
 """
 
 from __future__ import annotations
@@ -47,15 +47,24 @@ def test_flag_set_true_reaches_the_masked_get(tmp_path, monkeypatch):
     assert _masked(cfg).get(FLAG) is True
 
 
-def test_flag_defaults_off_and_rejects_truthy_strings(tmp_path, monkeypatch):
-    """Default-off; a string "true" must NOT coerce (frontend is === true)."""
+def test_flag_defaults_on_and_explicit_false_opts_out(tmp_path, monkeypatch):
+    """Default-ON now: absent key enables the pane; only a real JSON ``false``
+    opts out (a non-bool coerces to the default, and the frontend is === true)."""
     _point_loader_at(tmp_path, monkeypatch, {})
-    assert KiroCrewConfig.load().agent_template_pane is False
+    assert KiroCrewConfig.load().agent_template_pane is True
 
-    _point_loader_at(tmp_path, monkeypatch, {FLAG: "true"})
+    # Explicit boolean false is the opt-out and must survive to the browser.
+    _point_loader_at(tmp_path, monkeypatch, {FLAG: False})
     cfg = KiroCrewConfig.load()
     assert cfg.agent_template_pane is False
     assert _masked(cfg).get(FLAG) is False
+
+    # A non-bool (e.g. the string "true") is not a valid opt-out signal, so it
+    # degrades to the default — which is now on.
+    _point_loader_at(tmp_path, monkeypatch, {FLAG: "true"})
+    cfg = KiroCrewConfig.load()
+    assert cfg.agent_template_pane is True
+    assert _masked(cfg).get(FLAG) is True
 
 
 def test_flag_round_trips_through_save(tmp_path, monkeypatch):

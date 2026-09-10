@@ -2404,14 +2404,16 @@ class KiroCrewConfig:
             "Show the Connections services gallery (set false to hide it).",
         ),
     )
-    #: Same shape and posture as ``connections_ui``: default-off, strict bool,
-    #: read live by the dashboard's useAgentTemplatePane hook. Unmodelled, the
-    #: masked GET strips it and the panel can never be enabled.
+    #: Strict bool, read live by the dashboard's useAgentTemplatePane hook.
+    #: Default-ON: the in-agent template pane is the primary way to view and edit
+    #: a template's definition, so a fresh install gets it without opting in. An
+    #: explicit ``false`` still opts out. Unmodelled, the masked GET strips it and
+    #: the panel can never be enabled, so it stays a real field.
     agent_template_pane: bool = field(
-        default=False,
+        default=True,
         metadata=_meta(
             "Agent template pane",
-            "Show the crew definition panel with private fork-on-edit (soak; see #8567).",
+            "Show the agent's template definition (prompt, skills, tools, MCP, guardrails) inline in the agent editor. On by default; set false to hide it.",
         ),
     )
     #: Top-level sections that were PRESENT on disk but not a JSON object, and
@@ -3821,7 +3823,7 @@ class KiroCrewConfig:
             ),
             auto_update=data.get("auto_update", True),
             connections_ui=_safe_bool(data.get("connections_ui", True), True),
-            agent_template_pane=_safe_bool(data.get("agent_template_pane", False), False),
+            agent_template_pane=_safe_bool(data.get("agent_template_pane", True), True),
             _degraded_sections=frozenset(_degraded | _OBSERVED_DEGRADED_SECTIONS),
             timezone=data.get("timezone", ""),
             snapshot_dir=data.get("snapshot_dir", ""),
