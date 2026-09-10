@@ -474,13 +474,83 @@ def test_apply_worker_report_has_no_conductor_field_parameter():
 
 
 def test_accept_batch_is_built_from_acceptance_and_never_from_a_claimed_pr():
-    item_id = _new_item(acceptance={"kind": "pr_checks", "repo": "owner/name"})
+    """The bar in the batch is the stored one, whatever number the worker claims."""
+    bar = {"kind": "pr_checks", "pr": 123, "repo": "owner/name"}
+    item_id = _new_item(acceptance=dict(bar))
     wl.apply_worker_report(CONDUCTOR, item_id, status="done", summary="s", pr=999)
     batch = wl.accept_batch(wl.list_work_items(CONDUCTOR))
-    assert batch == {
-        "items": [{"id": item_id, "accept": {"kind": "pr_checks", "repo": "owner/name"}}]
-    }
+    assert batch == {"items": [{"id": item_id, "accept": bar, "status": "done"}]}
     assert "999" not in json.dumps(batch)
+
+
+def test_accept_batch_leaves_out_an_item_whose_bar_is_not_concrete_yet():
+    """A ``"TBD"`` pull request number is not a bar ``accept_eval.py`` can evaluate —
+    it answers ``error`` — so the item stays out until an ``accept`` promotion fills
+    the number in, which is the two-phase acceptance the skill promises."""
+    pending = _new_item(acceptance={"kind": "pr_checks", "pr": "TBD", "repo": "owner/name"})
+    lowercase = _new_item(acceptance={"kind": "pr_checks", "pr": "tbd", "repo": "owner/name"})
+    blank = _new_item(acceptance={"kind": "file", "path": ""})
+    nested = _new_item(acceptance={"kind": "file", "path": "/p", "meta": {"branch": "TBD"}})
+    unnumbered = _new_item(acceptance={"kind": "pr_checks", "repo": "owner/name"})
+    ready = _new_item(acceptance={"kind": "pr_checks", "pr": 7, "repo": "owner/name"})
+    ids = [entry["id"] for entry in wl.accept_batch(wl.list_work_items(CONDUCTOR))["items"]]
+    assert ids == [ready]
+    for absent in (pending, lowercase, blank, nested, unnumbered):
+        assert absent not in ids
+
+    # And the promotion puts it back, which is what makes the omission temporary
+    # rather than a way to lose an item.
+    wl.apply_acceptance_update(
+        CONDUCTOR, pending, acceptance={"kind": "pr_checks", "pr": 4321, "repo": "owner/name"}
+    )
+    promoted = [entry["id"] for entry in wl.accept_batch(wl.list_work_items(CONDUCTOR))["items"]]
+    assert pending in promoted
+
+
+def test_a_non_positive_or_boolean_pr_is_not_a_concrete_bar():
+    """``accept_eval.py`` refuses a bool as an int and cannot check pull request 0, so
+    neither counts as filled in."""
+    assert wl.is_acceptance_concrete({"kind": "pr_checks", "pr": 1}) is True
+    assert wl.is_acceptance_concrete({"kind": "pr_checks", "pr": 0}) is False
+    assert wl.is_acceptance_concrete({"kind": "pr_checks", "pr": -3}) is False
+    assert wl.is_acceptance_concrete({"kind": "pr_checks", "pr": True}) is False
+    assert wl.is_acceptance_concrete({"kind": "pr_checks", "pr": "12"}) is False
+    assert wl.is_acceptance_concrete({}) is False
+    # The pr rule is ``pr_checks``-specific; another kind is judged on placeholders.
+    assert wl.is_acceptance_concrete({"kind": "human_approval"}) is True
+    assert wl.is_acceptance_concrete({"kind": "file", "path": "/p", "exists": None}) is False
+
+
+def test_accept_batch_carries_status_and_does_not_filter_on_it():
+    """The "only ``done`` items" filter is the conductor's to apply — the batch makes
+    it applyable without a second lookup, and applies nothing itself."""
+    moving = _new_item(acceptance={"kind": "human_approval"})
+    finished = _new_item(acceptance={"kind": "human_approval"})
+    silent = _new_item(acceptance={"kind": "human_approval"})
+    wl.apply_worker_report(CONDUCTOR, moving, status="progress", summary="s")
+    wl.apply_worker_report(CONDUCTOR, finished, status="done", summary="s")
+    by_id = {e["id"]: e for e in wl.accept_batch(wl.list_work_items(CONDUCTOR))["items"]}
+    assert by_id[moving]["status"] == "progress"
+    assert by_id[finished]["status"] == "done"
+    assert by_id[silent]["status"] is None
+
+
+def test_a_done_item_is_never_stale_however_long_it_stays_quiet():
+    """``stale`` means the WORKER went quiet. After ``done`` the move belongs to the
+    conductor or a human, so silence is the expected end of the work."""
+    item_id = _new_item(acceptance={"kind": "human_approval"})
+    wl.apply_worker_report(CONDUCTOR, item_id, status="done", summary="green")
+    item = wl.read_work_item(CONDUCTOR, item_id)
+    assert item is not None
+    much_later = datetime.now().astimezone() + timedelta(seconds=wl.DEFAULT_STALE_WINDOW_SECS * 10)
+    assert wl.is_stale(item, worker_running=False, now=much_later) is False
+    for status in ("progress", "blocked", "question"):
+        wl.apply_worker_report(CONDUCTOR, item_id, status=status, summary="s")
+        still_working = wl.read_work_item(CONDUCTOR, item_id)
+        assert still_working is not None
+        assert wl.is_stale(still_working, worker_running=False, now=much_later) is True, status
+    assert "done" not in wl.STALE_ELIGIBLE_STATUSES
+    assert wl.STALE_ELIGIBLE_STATUSES < wl.WORKER_STATUSES
 
 
 def test_accept_batch_drops_terminal_items_and_items_with_no_bar():
