@@ -689,6 +689,19 @@ class TestConductorInstaller:
         assert "1. `chat_folder_create`" not in text, "no folder-precreation dispatch step"
 
 
+class _proc:
+    """Minimal ``CompletedProcess`` stand-in for the exec seam's two callers.
+
+    The real thing needs an argv and encoding to construct; these three fields
+    are the whole surface ``_run`` and ``_pr_is_draft`` read.
+    """
+
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
 def _load_evaluator():
     """Load accept_eval.py by file location, via the shared no-bytecode helper.
 
@@ -715,12 +728,46 @@ class TestAcceptEvaluatorInvariant:
         """The only exec path constructs argv from narrowly-typed fields."""
         mod = _load_evaluator()
         seen = []
+        mod._pr_is_draft = lambda pr, repo=None: False
         mod._run = lambda argv, cwd=None: (seen.append((argv, cwd)), ("pass", "ok"))[1]
         verdict, _ = mod._evaluate(
             {"accept": {"kind": "pr_checks", "pr": 123, "repo": "owner/name"}}
         )
         assert verdict == "pass"
         assert seen == [(["gh", "pr", "checks", "123", "--repo", "owner/name"], None)]
+
+    def test_the_draft_probe_builds_its_own_argv_too(self):
+        """The second invocation is built here as well, from the same fields.
+
+        Both go through ``_exec``, whose ``_SELF_BUILT_COMMANDS`` guard is the
+        one seam: a new invocation must not arrive with a new way past it.
+        """
+        mod = _load_evaluator()
+        seen = []
+
+        def _fake_exec(argv, cwd=None):
+            seen.append((argv, cwd))
+            return (None, _proc(stdout="false"))
+
+        mod._exec = _fake_exec
+        assert mod._pr_is_draft(123, "owner/name") is False
+        assert seen == [
+            (
+                [
+                    "gh",
+                    "pr",
+                    "view",
+                    "123",
+                    "--repo",
+                    "owner/name",
+                    "--json",
+                    "isDraft",
+                    "-q",
+                    ".isDraft",
+                ],
+                None,
+            )
+        ]
 
     def test_run_refuses_a_command_it_did_not_build(self):
         """The internal guard fails closed if a handler ever leaks spec input."""
@@ -729,6 +776,14 @@ class TestAcceptEvaluatorInvariant:
         assert verdict == "refused"
         assert "not a command this script builds" in evidence
         assert mod._SELF_BUILT_COMMANDS == {"gh"}
+
+    def test_the_draft_probe_refuses_a_command_it_did_not_build(self):
+        """Same guard, reached through the probe's own seam."""
+        mod = _load_evaluator()
+        problem, proc = mod._exec(["git", "--version"])
+        assert proc is None
+        assert problem[0] == "refused"
+        assert "not a command this script builds" in problem[1]
 
     def test_no_spec_field_can_name_a_command(self):
         """Source ratchet: no handler may read an argv/command/shell spec field.
@@ -869,3 +924,187 @@ class TestAcceptEvaluator:
             timeout=30,
         )
         assert proc.returncode == 2
+
+
+class TestDraftPullRequest:
+    """A draft PR is ``refused``, because ``pending`` is an infinite loop.
+
+    The aggregate readiness check stays pending on the draft flag alone, so
+    ``gh pr checks`` exits 8 however green every lane is. A conductor that
+    reads ``pending`` polls again, and the condition cannot become true without
+    a person acting - which is exactly what ``refused`` is for.
+    """
+
+    def _wire(self, mod, monkeypatch, script):
+        """Feed ``_exec`` scripted results, newest call last; record the argvs."""
+        seen = []
+
+        def _fake_run(argv, **kwargs):
+            seen.append(list(argv))
+            return _proc(*script[len(seen) - 1])
+
+        monkeypatch.setattr(mod.subprocess, "run", _fake_run)
+        return seen
+
+    def test_a_draft_pr_is_refused_and_the_real_check_never_runs(self, monkeypatch):
+        mod = _load_evaluator()
+        seen = self._wire(mod, monkeypatch, [(0, "true\n", "")])
+        verdict, evidence = mod._evaluate(
+            {"accept": {"kind": "pr_checks", "pr": 123, "repo": "owner/name"}}
+        )
+        assert verdict == "refused"
+        assert "PR #123 is a draft" in evidence
+        assert "cannot pass while draft" in evidence
+        assert "mark it ready for review" in evidence
+        # One call, and it is the probe: spending 300s on a check whose answer
+        # is already known would be the same wait this verdict removes.
+        assert len(seen) == 1
+        assert seen[0][:4] == ["gh", "pr", "view", "123"]
+
+    def test_a_non_draft_pr_runs_the_check_unchanged(self, monkeypatch):
+        mod = _load_evaluator()
+        seen = self._wire(mod, monkeypatch, [(0, "false\n", ""), (0, "all checks pass", "")])
+        verdict, evidence = mod._evaluate(
+            {"accept": {"kind": "pr_checks", "pr": 123, "repo": "owner/name"}}
+        )
+        assert verdict == "pass"
+        assert "all checks pass" in evidence
+        assert seen[1] == ["gh", "pr", "checks", "123", "--repo", "owner/name"]
+
+    def test_a_non_draft_pr_still_reports_pending_while_checks_run(self, monkeypatch):
+        """The pending contract is untouched for a PR that is ready for review."""
+        mod = _load_evaluator()
+        self._wire(mod, monkeypatch, [(0, "false", ""), (8, "still running", "")])
+        verdict, evidence = mod._evaluate({"accept": {"kind": "pr_checks", "pr": 7}})
+        assert verdict == "pending"
+        assert "still running" in evidence
+
+    def test_a_probe_that_cannot_answer_does_not_invent_a_refusal(self, monkeypatch):
+        """gh missing, no such PR, an auth error: the check runs as before.
+
+        One-sided on purpose. A probe that fails for any reason other than a
+        clean ``true`` must not turn a working acceptance into a ``refused``
+        the conductor has to escalate to a human.
+        """
+        mod = _load_evaluator()
+        for probe in [(1, "", "no pull requests found"), (0, "", ""), (0, "null", "")]:
+            seen = self._wire(mod, monkeypatch, [probe, (0, "green", "")])
+            verdict, _ = mod._evaluate({"accept": {"kind": "pr_checks", "pr": 9}})
+            assert verdict == "pass", probe
+            assert seen[1][:3] == ["gh", "pr", "checks"], probe
+
+    def test_the_probe_omits_repo_when_the_spec_does_not_name_one(self, monkeypatch):
+        mod = _load_evaluator()
+        seen = self._wire(mod, monkeypatch, [(0, "false", ""), (0, "green", "")])
+        mod._evaluate({"accept": {"kind": "pr_checks", "pr": 9}})
+        assert seen[0] == ["gh", "pr", "view", "9", "--json", "isDraft", "-q", ".isDraft"]
+
+    def test_a_malformed_pr_is_rejected_before_any_probe(self, monkeypatch):
+        """The integer guard still runs first; a bad spec spends no subprocess."""
+        mod = _load_evaluator()
+        seen = self._wire(mod, monkeypatch, [(0, "true", "")])
+        verdict, evidence = mod._evaluate({"accept": {"kind": "pr_checks", "pr": "123"}})
+        assert verdict == "error"
+        assert "integer pr" in evidence
+        assert seen == []
+
+
+class TestUsageInsteadOfBlockingOnStdin:
+    """No input means print usage and exit 2, never a read that hangs.
+
+    Run on a terminal or with ``--help``, the ``json.load(sys.stdin)`` below
+    blocks until the caller's tool timeout: an approval spent, no output, and
+    nothing that says the input goes on stdin.
+    """
+
+    def test_help_exits_2_with_usage_on_stderr(self):
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "--help"],
+            input="",
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+        )
+        assert proc.returncode == 2
+        assert proc.stdout == ""
+        assert "Usage:" in proc.stderr
+        assert "accept_eval.py < items.json" in proc.stderr
+        # Usage, not the module's security essay.
+        assert "THE SECURITY INVARIANT" not in proc.stderr
+
+    def test_help_runs_no_subprocess_and_reads_no_stdin(self, monkeypatch):
+        mod = _load_evaluator()
+
+        def _forbidden(*args, **kwargs):
+            raise AssertionError("--help must not run a subprocess")
+
+        monkeypatch.setattr(mod.subprocess, "run", _forbidden)
+        stdin = _RefusingStdin()
+        monkeypatch.setattr(mod.sys, "stdin", stdin)
+        for flag in ("-h", "--help"):
+            assert mod.main([flag]) == 2
+        assert stdin.read_calls == 0
+
+    def test_a_tty_stdin_prints_usage_instead_of_reading(self, monkeypatch):
+        mod = _load_evaluator()
+        stdin = _RefusingStdin(tty=True)
+        monkeypatch.setattr(mod.sys, "stdin", stdin)
+        assert mod.main([]) == 2
+        assert stdin.read_calls == 0
+
+    def test_a_stdin_that_cannot_answer_isatty_is_not_treated_as_a_tty(self, monkeypatch):
+        """Piped input must keep working when ``isatty`` raises (closed stdin)."""
+        mod = _load_evaluator()
+
+        class _Broken:
+            def isatty(self):
+                raise ValueError("I/O operation on closed file")
+
+        monkeypatch.setattr(mod.sys, "stdin", _Broken())
+        assert mod._stdin_is_a_tty() is False
+
+    def test_piped_input_keeps_its_exit_codes(self):
+        """The contract for real input is unchanged: 0 evaluated, 2 malformed."""
+        for payload, expected in (('{"items": []}', 0), ("not json", 2)):
+            proc = subprocess.run(
+                [sys.executable, str(SCRIPT)],
+                input=payload,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=30,
+            )
+            assert proc.returncode == expected, payload
+
+    def test_usage_is_sliced_from_the_docstring_not_duplicated(self):
+        """One source for the contract, so help cannot drift from the module."""
+        mod = _load_evaluator()
+        usage = mod._usage_text()
+        assert usage in (mod.__doc__ or "")
+        # The anchors the slice depends on must both stay present, and the
+        # opening one must stay unique inside the docstring or the slice moves.
+        doc = mod.__doc__ or ""
+        assert doc.count("Usage:") == 1
+        assert "THE SECURITY INVARIANT" in doc
+
+
+class _RefusingStdin:
+    """A stdin that counts reads. ``isatty`` is configurable.
+
+    It returns "" rather than raising, because ``main`` catches every
+    ``Exception`` around ``json.load`` and would convert a raise into the same
+    exit 2 the usage path returns - hiding a gate that stopped working. The
+    count is what the assertion reads.
+    """
+
+    def __init__(self, tty=False):
+        self._tty = tty
+        self.read_calls = 0
+
+    def isatty(self):
+        return self._tty
+
+    def read(self, *args, **kwargs):
+        self.read_calls += 1
+        return ""
