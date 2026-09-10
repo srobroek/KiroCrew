@@ -1,5 +1,5 @@
 import { memo } from 'react'
-import { KeyRound, Loader2, Play, Settings, SlidersHorizontal } from 'lucide-react'
+import { KeyRound, Loader2, RotateCw, Settings, SlidersHorizontal } from 'lucide-react'
 
 import { i18nT } from '../../i18n/t'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
@@ -217,13 +217,13 @@ export const ErrorCard = memo(function ErrorCard({
         onClick={onContinue}
         disabled={continuing}
         className={`${ACTION_BTN} bg-accent text-accent-fg hover:bg-accent-hover`}
-        title={i18nT('pages.chat.errorCard.continue_hint')}
+        title={i18nT('pages.chat.errorCard.resume_hint')}
         data-testid="error-card-continue"
       >
         {continuing
           ? <Loader2 size={12} className="lucide-inline shrink-0 animate-spin" aria-hidden="true" />
-          : <Play size={12} className="lucide-inline shrink-0" aria-hidden="true" />}
-        {i18nT('pages.chat.errorCard.continue')}
+          : <RotateCw size={12} className="lucide-inline shrink-0" aria-hidden="true" />}
+        {i18nT('pages.chat.errorCard.resume')}
       </button>
     </div>
   )

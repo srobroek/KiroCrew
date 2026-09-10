@@ -6,7 +6,7 @@ import { ErrorCard, isAuthRequired, isModelUnentitled } from '../pages/chat/Erro
 /**
  * The error row used to be an actionless div whose own copy told the reader to
  * retry. These tests pin the two shapes: settled (no action) and resumable
- * (Continue), plus the guard that a press cannot double-fire.
+ * (Resume), plus the guard that a press cannot double-fire.
  */
 describe('ErrorCard', () => {
   it('renders the prose verbatim with no action when the turn is not resumable', () => {
@@ -17,9 +17,13 @@ describe('ErrorCard', () => {
     expect(screen.queryByTestId('error-card-continue')).toBeNull()
   })
 
-  it('renders a Continue action when the turn is resumable', () => {
+  it('renders a Resume action when the turn is resumable', () => {
     render(<ErrorCard content="boom" onContinue={() => {}} />)
     expect(screen.getByTestId('error-card-continue')).toBeTruthy()
+    // Interrupted-turn recovery is a Resume action — the visible label must
+    // read "Resume", not "Continue" (regression pin for the Resume/Continue
+    // naming rule).
+    expect(screen.getByTestId('error-card-continue')).toHaveTextContent('Resume')
     expect(screen.getByTestId('error-card')).toHaveAttribute('data-continuable', 'true')
   })
 
