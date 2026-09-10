@@ -2092,11 +2092,24 @@ def run_command_sandboxed(
     # .netrc, .git-credentials, .npmrc, .pypirc, .kirocrew/.env) and scrubs the
     # agent-denied env keys, while deliberately leaving ~/.ssh reachable so a
     # legitimate command cron can still do git/scp/rsync over SSH. "strict" would
-    # additionally hide ~/.ssh but break those workflows; the residual .ssh
-    # exposure is covered by the storage-time deny-list (mcp_cron._vet_shell_command,
-    # which blocks any .ssh reference) — the primary control. This sandbox is
-    # defense-in-depth and is bypassed when the OS backend falls back to "none"
-    # (e.g. macOS >= 26 — see _clean_cron_env).
+    # additionally hide ~/.ssh but break those workflows, and SSH_AUTH_SOCK is
+    # scrubbed from the cron env, so there is no agent alternative: a git or scp
+    # cron has to read the key file itself.
+    #
+    # So ~/.ssh stays READABLE here, and that is an ACCEPTED RESIDUAL, not a
+    # covered case. The storage-time vet (mcp_cron._vet_shell_command) refuses a
+    # command that NAMES a credential path (_CRON_CRED_PATH_RE, plus its
+    # quote/escape/variable/glob variants). That is a spelling gate, not a fence:
+    # a reader that names no credential path (`grep -r 'PRIVATE KEY' ~`,
+    # `tar czf - ~ | base64`, `find ~ -name id_rsa`) still reaches the key, and
+    # widening the gate by guessing more spellings refuses legitimate work
+    # (`ssh -i /opt/deploy/id_rsa`) while one metacharacter walks past it. The
+    # stdout redaction below is the control that does not depend on spelling: it
+    # masks a dump whose SHAPE it recognises. Real closure is a per-job opt-in
+    # that hides ~/.ssh by default and exposes it only for a job that declares it
+    # needs SSH — future work. This sandbox is defense-in-depth and is bypassed
+    # when the OS backend falls back to "none" (e.g. macOS >= 26 — see
+    # _clean_cron_env).
     #
     # wrap_argv is INSIDE the try: on a host with no OS sandbox backend (every
     # Windows host) it fail-closes by raising, and outside the try that escaped
@@ -2206,6 +2219,17 @@ def run_command_sandboxed(
                 "output": "Cancelled by user",
                 "exit_code": proc.returncode,
             }
+        # Redact the captured stdout on EVERY exit path, success included. The
+        # command is model-supplied and runs under mode="cc", which leaves
+        # ~/.ssh readable, so `cat ~/.ssh/id_rsa` exits 0 and its stdout IS the
+        # job result -- delivered to chat and persisted in cron history. Exit 0
+        # is the path a key dump takes, so it needs redaction at least as much
+        # as the non-zero-exit stderr tail below. Redact the WHOLE text BEFORE
+        # the 64KB slice, for the same reason as that stderr tail: slicing first
+        # could cut off a credential's detectable prefix (e.g. the BEGIN line of
+        # a PEM key, or the scheme of a token-bearing URL), letting the raw
+        # secret tail through redaction.
+        output = redact(output)
         if len(output) > _MAX_COMMAND_OUTPUT:
             output = output[:_MAX_COMMAND_OUTPUT] + "\n\n[truncated — output exceeded 64KB]"
         if proc.returncode != 0:
